@@ -12,7 +12,8 @@ const {
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
+const qrcodeTerminal = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const express = require('express');
 const {
   getApiKey,
@@ -29,6 +30,10 @@ const PROVIDER_LIST = ['openai', 'gemini', 'mistral', 'anthropic'];
 // In-memory state machine for the "control room" flow (self-chat only)
 // step: null | 'awaiting_pin' | 'awaiting_provider_for_key' | 'awaiting_apikey' | 'awaiting_active_provider'
 let controlState = { step: null, pendingProvider: null };
+
+// Holds the latest raw QR string so the /qr web page can render it as an image
+let latestQR = null;
+let isConnected = false;
 
 const MIN_DELAY_MS = 4000;
 const MAX_DELAY_MS = 9000;
@@ -203,13 +208,33 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Pairing code flow: set PAIR_PHONE_NUMBER in Railway/Render env vars
+  // (format: kode negara + nomor, tanpa "+" atau spasi, contoh 6281234567890)
+  const pairPhoneNumber = process.env.PAIR_PHONE_NUMBER;
+  if (pairPhoneNumber && !sock.authState.creds.registered) {
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(pairPhoneNumber);
+        const formatted = code.match(/.{1,4}/g).join('-');
+        console.log('==========================================');
+        console.log(`KODE PAIRING: ${formatted}`);
+        console.log('Masukkan kode ini di WhatsApp: Perangkat Tertaut > Tautkan Perangkat > Tautkan dengan nomor telepon');
+        console.log('==========================================');
+      } catch (err) {
+        console.error('Gagal minta kode pairing:', err.message);
+      }
+    }, 3000);
+  }
+
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
-    if (qr) {
-      console.log('Scan QR code berikut dengan WhatsApp (Linked Devices):');
-      qrcode.generate(qr, { small: true });
+    if (qr && !pairPhoneNumber) {
+      latestQR = qr;
+      console.log('QR baru tersedia. Buka halaman /qr bot ini di browser untuk melihatnya sebagai gambar.');
+      qrcodeTerminal.generate(qr, { small: true }); // fallback kalau dijalankan lokal
     }
     if (connection === 'close') {
+      isConnected = false;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const errorMessage = lastDisconnect?.error?.message;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -222,6 +247,8 @@ async function startBot() {
         console.log('Sesi logged out. Hapus folder auth_info lalu deploy ulang untuk scan QR baru.');
       }
     } else if (connection === 'open') {
+      isConnected = true;
+      latestQR = null;
       console.log('✅ Ruto AI tersambung ke WhatsApp!');
     }
   });
@@ -278,10 +305,40 @@ async function startBot() {
   });
 }
 
-startBot();
-
-// Minimal web server: Railway/Render (web service plans) expect a bound port
+// Minimal web server: Railway/Render (web service plans) expect a bound port,
+// and this also serves the QR code as an actual image at /qr
 const app = express();
+
 app.get('/', (req, res) => res.send('Ruto AI is running'));
+
+app.get('/qr', async (req, res) => {
+  if (isConnected) {
+    return res.send(
+      '<h2 style="font-family:sans-serif">✅ Bot sudah tersambung ke WhatsApp. Tidak perlu scan lagi.</h2>'
+    );
+  }
+  if (!latestQR) {
+    return res.send(
+      '<html><head><meta http-equiv="refresh" content="5"></head><body style="font-family:sans-serif;text-align:center;padding-top:40px">' +
+        '<h2>Belum ada QR. Menyiapkan koneksi...</h2><p>Halaman ini refresh otomatis tiap 5 detik.</p></body></html>'
+    );
+  }
+  try {
+    const dataUrl = await QRCode.toDataURL(latestQR, { width: 320 });
+    res.send(
+      '<html><head><meta http-equiv="refresh" content="20"></head><body style="font-family:sans-serif;text-align:center;padding-top:20px">' +
+        '<h2>Scan QR ini dengan WhatsApp</h2>' +
+        '<p>Setelan &gt; Perangkat Tertaut &gt; Tautkan Perangkat</p>' +
+        `<img src="${dataUrl}" style="width:320px;height:320px;border:8px solid white" />` +
+        '<p style="color:gray">Halaman ini refresh otomatis tiap 20 detik (QR WhatsApp berganti berkala).</p>' +
+        '</body></html>'
+    );
+  } catch (err) {
+    res.status(500).send('Gagal membuat gambar QR: ' + err.message);
+  }
+});
+
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Health check server on port ${port}`));
+app.listen(port, () => console.log(`Web server jalan di port ${port}`));
+
+startBot();
