@@ -1,0 +1,18 @@
+{
+  "name": "ruto-ai-bot",
+  "version": "1.0.0",
+  "description": "Bot WhatsApp AI (Ruto AI) pakai Baileys, dukung 4 provider AI (OpenAI, Gemini, Mistral, Anthropic), dengan ruang kendali ganti API key dan delay balasan",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "express": "^4.19.2",
+    "pino": "^9.3.2",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
