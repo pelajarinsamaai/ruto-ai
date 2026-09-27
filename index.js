@@ -137,7 +137,8 @@ async function handleControlRoom(sock, jid, text) {
   }
 
   if (controlState.step === 'awaiting_pin') {
-    if (trimmed === CONTROL_PIN) {
+    const digitsOnly = trimmed.replace(/\D/g, '');
+    if (digitsOnly === CONTROL_PIN) {
       controlState.step = 'awaiting_provider_for_key';
       await sock.sendMessage(jid, {
         text: `Provider mana yang mau diganti key-nya?\n\n${providerMenuText()}`,
@@ -253,54 +254,70 @@ async function startBot() {
     }
   });
 
+  // Extracts just the digits/id portion of a JID, ignoring the domain
+  // (@s.whatsapp.net vs @lid vs @g.us) and any :device suffix, so comparisons
+  // stay correct even when WhatsApp uses different JID formats.
+  function jidUserPart(jid) {
+    if (!jid) return null;
+    return jid.split('@')[0].split(':')[0];
+  }
+
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-    const msg = messages[0];
-    if (!msg.message) return;
-
-    const remoteJid = msg.key.remoteJid;
-    const isGroup = remoteJid.endsWith('@g.us');
-    const ownJid = jidNormalizedUser(sock.user.id);
-    const isSelfChat = jidNormalizedUser(remoteJid) === ownJid;
-    const text = extractText(msg);
-    if (!text) return;
-
-    // Control room: messages you send to your own "Message Yourself" chat
-    if (isSelfChat && msg.key.fromMe) {
-      const handled = await handleControlRoom(sock, remoteJid, text);
-      if (handled) return;
-    }
-
-    // Never respond to our own outgoing messages elsewhere (avoids loops)
-    if (msg.key.fromMe) return;
-
-    // In groups: only reply when mentioned, replied to, or keyword "ruto" is used
-    if (isGroup) {
-      const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-      const mentioned = mentionedJids.some((j) => jidNormalizedUser(j) === ownJid);
-      const repliedParticipant = msg.message?.extendedTextMessage?.contextInfo?.participant;
-      const isReplyToBot = repliedParticipant && jidNormalizedUser(repliedParticipant) === ownJid;
-      const keywordTrigger = /\bruto\b/i.test(text);
-      if (!mentioned && !isReplyToBot && !keywordTrigger) return;
-    }
-
-    const provider = await getActiveProvider();
-    const apiKey = await getApiKey(provider);
-    if (!apiKey) {
-      console.log(
-        `⚠️  Belum ada API key untuk provider aktif (${provider}). Set lewat ruang kendali: "ganti api key"`
-      );
-      return;
-    }
-
     try {
+      if (type !== 'notify') return;
+      const msg = messages[0];
+      if (!msg.message) return;
+
+      const remoteJid = msg.key.remoteJid;
+      const isGroup = remoteJid.endsWith('@g.us');
+      const ownJid = sock.user.id;
+      const isSelfChat = !isGroup && jidUserPart(remoteJid) === jidUserPart(ownJid);
+      const text = extractText(msg);
+
+      console.log(
+        `[pesan masuk] remoteJid=${remoteJid} fromMe=${msg.key.fromMe} isSelfChat=${isSelfChat} text=${JSON.stringify(
+          text
+        )}`
+      );
+
+      if (!text) return;
+
+      // Control room: messages you send to your own "Message Yourself" chat
+      if (isSelfChat && msg.key.fromMe) {
+        const handled = await handleControlRoom(sock, remoteJid, text);
+        if (handled) return;
+      }
+
+      // Never respond to our own outgoing messages elsewhere (avoids loops)
+      if (msg.key.fromMe) return;
+
+      // In groups: only reply when mentioned, replied to, or keyword "ruto" is used
+      if (isGroup) {
+        const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+        const mentioned = mentionedJids.some((j) => jidUserPart(j) === jidUserPart(ownJid));
+        const repliedParticipant = msg.message?.extendedTextMessage?.contextInfo?.participant;
+        const isReplyToBot =
+          repliedParticipant && jidUserPart(repliedParticipant) === jidUserPart(ownJid);
+        const keywordTrigger = /\bruto\b/i.test(text);
+        if (!mentioned && !isReplyToBot && !keywordTrigger) return;
+      }
+
+      const provider = await getActiveProvider();
+      const apiKey = await getApiKey(provider);
+      if (!apiKey) {
+        console.log(
+          `⚠️  Belum ada API key untuk provider aktif (${provider}). Set lewat ruang kendali: "ganti api key"`
+        );
+        return;
+      }
+
       await sock.sendPresenceUpdate('composing', remoteJid);
       await sleep(randomDelay());
       const reply = await askRuto(provider, apiKey, text);
       await sock.sendPresenceUpdate('paused', remoteJid);
       await sock.sendMessage(remoteJid, { text: reply }, { quoted: msg });
     } catch (err) {
-      console.error('Gagal membalas pesan:', err.message);
+      console.error('Gagal memproses pesan:', err.message);
     }
   });
 }
