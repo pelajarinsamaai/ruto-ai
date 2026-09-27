@@ -8,7 +8,7 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  jidNormalizedUser,
+  jidDecode,
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
@@ -34,6 +34,20 @@ let controlState = { step: null, pendingProvider: null };
 // Holds the latest raw QR string so the /qr web page can render it as an image
 let latestQR = null;
 let isConnected = false;
+
+// WhatsApp now often reports our own chat (and others') using a privacy ID
+// ("@lid") instead of the phone-number JID ("@s.whatsapp.net"). We resolve
+// our own LID once connected so self-chat/mention detection stays correct.
+let ownLid = null;
+
+// Compares just the "user" portion of two JIDs (safe across @lid/@s.whatsapp.net
+// and device-suffix differences), per Baileys' own JID-handling guidance.
+function sameJidUser(jidA, jidB) {
+  if (!jidA || !jidB) return false;
+  const a = jidDecode(jidA);
+  const b = jidDecode(jidB);
+  return !!(a && b && a.user === b.user);
+}
 
 const MIN_DELAY_MS = 4000;
 const MAX_DELAY_MS = 9000;
@@ -227,7 +241,7 @@ async function startBot() {
     }, 3000);
   }
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr && !pairPhoneNumber) {
       latestQR = qr;
@@ -251,16 +265,20 @@ async function startBot() {
       isConnected = true;
       latestQR = null;
       console.log('✅ Ruto AI tersambung ke WhatsApp!');
+      console.log('Info akun (debug):', JSON.stringify(sock.user));
+      try {
+        ownLid = await sock.signalRepository.lidMapping.getLIDForPN(sock.user.id);
+        console.log(`LID akun sendiri (dari signalRepository): ${ownLid || '(kosong)'}`);
+      } catch (err) {
+        console.log('signalRepository.lidMapping tidak tersedia di versi ini:', err.message);
+      }
+      // Fallback: some Baileys versions expose the LID directly on sock.user
+      if (!ownLid && sock.user?.lid) {
+        ownLid = sock.user.lid;
+        console.log(`LID akun sendiri (dari sock.user.lid): ${ownLid}`);
+      }
     }
   });
-
-  // Extracts just the digits/id portion of a JID, ignoring the domain
-  // (@s.whatsapp.net vs @lid vs @g.us) and any :device suffix, so comparisons
-  // stay correct even when WhatsApp uses different JID formats.
-  function jidUserPart(jid) {
-    if (!jid) return null;
-    return jid.split('@')[0].split(':')[0];
-  }
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     try {
@@ -271,11 +289,12 @@ async function startBot() {
       const remoteJid = msg.key.remoteJid;
       const isGroup = remoteJid.endsWith('@g.us');
       const ownJid = sock.user.id;
-      const isSelfChat = !isGroup && jidUserPart(remoteJid) === jidUserPart(ownJid);
+      const isSelfChat =
+        !isGroup && (sameJidUser(remoteJid, ownJid) || (ownLid && sameJidUser(remoteJid, ownLid)));
       const text = extractText(msg);
 
       console.log(
-        `[pesan masuk] remoteJid=${remoteJid} fromMe=${msg.key.fromMe} isSelfChat=${isSelfChat} text=${JSON.stringify(
+        `[pesan masuk] remoteJid=${remoteJid} ownJid=${ownJid} ownLid=${ownLid} fromMe=${msg.key.fromMe} isSelfChat=${isSelfChat} text=${JSON.stringify(
           text
         )}`
       );
@@ -294,10 +313,13 @@ async function startBot() {
       // In groups: only reply when mentioned, replied to, or keyword "ruto" is used
       if (isGroup) {
         const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-        const mentioned = mentionedJids.some((j) => jidUserPart(j) === jidUserPart(ownJid));
+        const mentioned = mentionedJids.some(
+          (j) => sameJidUser(j, ownJid) || (ownLid && sameJidUser(j, ownLid))
+        );
         const repliedParticipant = msg.message?.extendedTextMessage?.contextInfo?.participant;
         const isReplyToBot =
-          repliedParticipant && jidUserPart(repliedParticipant) === jidUserPart(ownJid);
+          repliedParticipant &&
+          (sameJidUser(repliedParticipant, ownJid) || (ownLid && sameJidUser(repliedParticipant, ownLid)));
         const keywordTrigger = /\bruto\b/i.test(text);
         if (!mentioned && !isReplyToBot && !keywordTrigger) return;
       }
