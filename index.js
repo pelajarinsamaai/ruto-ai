@@ -17,22 +17,77 @@ const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const express = require('express');
-const configModule = require('./lib/config');
-const {
-  getApiKey,
-  setApiKey,
-  getActiveProvider,
-  setActiveProvider,
-  getAllKeys,
-} = configModule;
-console.log('[diagnosa] lib/config dimuat dari:', require.resolve('./lib/config'));
-console.log('[diagnosa] isi export config:', Object.keys(configModule).join(', ') || '(KOSONG)');
-if (typeof getActiveProvider !== 'function') {
-  console.error(
-    '❌ lib/config.js SALAH ISI: tidak mengekspor getActiveProvider/getAllKeys. ' +
-      'Ganti isinya dengan config.js yang benar (harus ada module.exports di bagian bawah).'
-  );
+// ── Konfigurasi (dulu di lib/config.js, sekarang digabung di sini) ──────────
+// Sengaja digabung supaya bot tidak bergantung pada file lib/config.js lagi.
+const fsp = require('fs/promises');
+const pathLib = require('path');
+
+console.log('[versi-kode] index.js mandiri v4 (config digabung) 2026-09-28');
+
+const DATA_DIR = process.env.DATA_DIR || pathLib.join(__dirname, 'data');
+const AUTH_DIR = process.env.AUTH_DIR || 'auth_info';
+const CONFIG_PATH = pathLib.join(DATA_DIR, 'config.json');
+const VALID_PROVIDERS_CFG = ['openai', 'gemini', 'mistral', 'anthropic'];
+const DEFAULT_CONFIG = {
+  activeProvider: 'mistral',
+  apiKeys: { openai: null, gemini: null, mistral: null, anthropic: null },
+};
+const ENV_KEY_NAMES = {
+  openai: 'OPENAI_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  mistral: 'MISTRAL_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+};
+
+async function readConfig() {
+  let parsed = {};
+  try {
+    parsed = JSON.parse(await fsp.readFile(CONFIG_PATH, 'utf-8'));
+  } catch {
+    // file belum ada / rusak: pakai default
+  }
+  return {
+    ...DEFAULT_CONFIG,
+    ...parsed,
+    apiKeys: { ...DEFAULT_CONFIG.apiKeys, ...(parsed.apiKeys || {}) },
+  };
 }
+
+async function writeConfig(config) {
+  await fsp.mkdir(DATA_DIR, { recursive: true });
+  await fsp.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+async function getApiKey(provider) {
+  const config = await readConfig();
+  const envName = ENV_KEY_NAMES[provider];
+  return config.apiKeys[provider] || (envName && process.env[envName]) || null;
+}
+
+async function setApiKey(provider, key) {
+  const config = await readConfig();
+  config.apiKeys[provider] = key;
+  await writeConfig(config);
+}
+
+async function getActiveProvider() {
+  const envProvider = process.env.ACTIVE_PROVIDER;
+  if (envProvider && VALID_PROVIDERS_CFG.includes(envProvider)) return envProvider;
+  const config = await readConfig();
+  return config.activeProvider;
+}
+
+async function setActiveProvider(provider) {
+  const config = await readConfig();
+  config.activeProvider = provider;
+  await writeConfig(config);
+}
+
+async function getAllKeys() {
+  const config = await readConfig();
+  return config.apiKeys;
+}
+// ─────────────────────────────────────────────────────────────────────────
 const { askRuto, PROVIDER_NAMES } = require('./lib/ai');
 
 const CONTROL_PIN = '2485';
@@ -228,7 +283,7 @@ async function handleControlRoom(sock, jid, text) {
 }
 
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version, isLatest } = await fetchLatestBaileysVersion();
   console.log(`Menggunakan versi WhatsApp Web: ${version.join('.')} (terbaru: ${isLatest})`);
 
