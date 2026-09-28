@@ -10,6 +10,7 @@ const {
   DisconnectReason,
   jidDecode,
   fetchLatestBaileysVersion,
+  generateMessageID,
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -48,6 +49,13 @@ function sameJidUser(jidA, jidB) {
   const b = jidDecode(jidB);
   return !!(a && b && a.user === b.user);
 }
+
+// ID semua pesan yang dikirim bot sendiri, supaya di self-chat bot tidak
+// membalas balasannya sendiri (loop tak berujung).
+const botSentIds = new Set();
+
+// Footer kecil di bawah balasan AI (huruf superscript = tampil kecil & pudar)
+const BOT_FOOTER = '\n\n_ᵈᵃʳⁱ ᴿᵘᵗᵒ ᵇᵒᵗ ᶜʰᵃᵗ_';
 
 const MIN_DELAY_MS = 4000;
 const MAX_DELAY_MS = 9000;
@@ -223,6 +231,15 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Tandai setiap pesan keluar dari bot dengan ID yang kita catat sendiri
+  const origSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (jid, content, options = {}) => {
+    const id = options.messageId || generateMessageID();
+    botSentIds.add(id);
+    setTimeout(() => botSentIds.delete(id), 10 * 60 * 1000);
+    return origSendMessage(jid, content, { ...options, messageId: id });
+  };
+
   // Pairing code flow: set PAIR_PHONE_NUMBER in Railway/Render env vars
   // (format: kode negara + nomor, tanpa "+" atau spasi, contoh 6281234567890)
   const pairPhoneNumber = process.env.PAIR_PHONE_NUMBER;
@@ -301,14 +318,18 @@ async function startBot() {
 
       if (!text) return;
 
+      // Abaikan pesan yang dikirim bot sendiri (anti-loop)
+      if (botSentIds.has(msg.key.id)) return;
+
       // Control room: messages you send to your own "Message Yourself" chat
       if (isSelfChat && msg.key.fromMe) {
         const handled = await handleControlRoom(sock, remoteJid, text);
         if (handled) return;
       }
 
-      // Never respond to our own outgoing messages elsewhere (avoids loops)
-      if (msg.key.fromMe) return;
+      // Pesan dari kita sendiri di chat lain/grup: abaikan.
+      // Tapi di self-chat ("Message Yourself"), bot tetap membalas seperti biasa.
+      if (msg.key.fromMe && !isSelfChat) return;
 
       // In groups: only reply when mentioned, replied to, or keyword "ruto" is used
       if (isGroup) {
@@ -337,7 +358,7 @@ async function startBot() {
       await sleep(randomDelay());
       const reply = await askRuto(provider, apiKey, text);
       await sock.sendPresenceUpdate('paused', remoteJid);
-      await sock.sendMessage(remoteJid, { text: reply }, { quoted: msg });
+      await sock.sendMessage(remoteJid, { text: reply + BOT_FOOTER }, { quoted: msg });
     } catch (err) {
       console.error('Gagal memproses pesan:', err.message);
     }
