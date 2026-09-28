@@ -11,6 +11,7 @@ const {
   jidDecode,
   fetchLatestBaileysVersion,
   generateMessageID,
+  jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -283,16 +284,31 @@ async function startBot() {
       latestQR = null;
       console.log('✅ Ruto AI tersambung ke WhatsApp!');
       console.log('Info akun (debug):', JSON.stringify(sock.user));
-      try {
-        ownLid = await sock.signalRepository.lidMapping.getLIDForPN(sock.user.id);
-        console.log(`LID akun sendiri (dari signalRepository): ${ownLid || '(kosong)'}`);
-      } catch (err) {
-        console.log('signalRepository.lidMapping tidak tersedia di versi ini:', err.message);
+      // Cari LID akun sendiri dari beberapa sumber (urut dari yang paling andal)
+      ownLid = null;
+      const candidates = [
+        ['sock.user.lid', () => sock.user?.lid],
+        ['creds.me.lid', () => sock.authState?.creds?.me?.lid],
+        ['env OWN_LID', () => process.env.OWN_LID],
+        [
+          'lidMapping',
+          () => sock.signalRepository.lidMapping.getLIDForPN(jidNormalizedUser(sock.user.id)),
+        ],
+      ];
+      for (const [name, fn] of candidates) {
+        try {
+          const val = await fn();
+          if (val) {
+            ownLid = val;
+            console.log(`LID akun sendiri ditemukan (${name}): ${ownLid}`);
+            break;
+          }
+        } catch (err) {
+          console.log(`LID lewat ${name} gagal: ${err.message}`);
+        }
       }
-      // Fallback: some Baileys versions expose the LID directly on sock.user
-      if (!ownLid && sock.user?.lid) {
-        ownLid = sock.user.lid;
-        console.log(`LID akun sendiri (dari sock.user.lid): ${ownLid}`);
+      if (!ownLid) {
+        console.log('⚠️  LID akun sendiri TIDAK ketemu. Set variable OWN_LID di Railway (contoh: 12345678901234@lid).');
       }
     }
   });
