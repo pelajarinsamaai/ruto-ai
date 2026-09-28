@@ -17,13 +17,22 @@ const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const express = require('express');
+const configModule = require('./lib/config');
 const {
   getApiKey,
   setApiKey,
   getActiveProvider,
   setActiveProvider,
   getAllKeys,
-} = require('./lib/config');
+} = configModule;
+console.log('[diagnosa] lib/config dimuat dari:', require.resolve('./lib/config'));
+console.log('[diagnosa] isi export config:', Object.keys(configModule).join(', ') || '(KOSONG)');
+if (typeof getActiveProvider !== 'function') {
+  console.error(
+    '❌ lib/config.js SALAH ISI: tidak mengekspor getActiveProvider/getAllKeys. ' +
+      'Ganti isinya dengan config.js yang benar (harus ada module.exports di bagian bawah).'
+  );
+}
 const { askRuto, PROVIDER_NAMES } = require('./lib/ai');
 
 const CONTROL_PIN = '2485';
