@@ -479,6 +479,15 @@ app.get('/qr', async (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
+app.get('/version', (req, res) => {
+  res.json({
+    kode: '[versi-kode] index.js mandiri v4 (config digabung) 2026-09-28',
+    getActiveProvider_ada: typeof getActiveProvider === 'function',
+    getAllKeys_ada: typeof getAllKeys === 'function',
+    waktu_server: new Date().toISOString(),
+  });
+});
+
 app.listen(port, () => console.log(`Web server jalan di port ${port}`));
 
 startBot();
